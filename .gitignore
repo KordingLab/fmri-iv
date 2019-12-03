@@ -1,0 +1,6 @@
+*/*
+!code/*
+
+**/__pycache__/*
+**/*.npz
+**/.ipynb_checkpoints
