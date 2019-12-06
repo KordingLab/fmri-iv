@@ -103,3 +103,39 @@ def gen_con_mat(n_vars: int, max_eig: float = 0.9):
     curr_max_eig = max(abs(np.linalg.eig(mat)[0]))
 
     return mat * max_eig / curr_max_eig
+
+
+def activation_cov(con_mat, noise_cov):
+    """
+    Compute the expected steady-state covariance matrix of activations in the network with
+    given connectivity matrix and noise covariance.
+
+    :param con_mat: Connectivity matrix (A)
+    :param noise_cov: Covariance matrix of the additive noise
+    :return: Covariance matrix of (log-)activations
+    """
+
+    nvars, ncols = con_mat.shape
+    assert nvars == ncols, 'Connectivity matrix must be square'
+
+    # set up the tensor equation noise_cov = D @ activation_cov
+    # this is based on the relation: A @ activation_cov @ A^T + noise_cov = activation_cov
+    d = np.eye(nvars * nvars)
+    d = np.reshape(d, (nvars,) * 4)
+
+    d = d - np.einsum('ik,jl->ijkl', con_mat, con_mat)
+
+    # get activation covariance by solving
+    return np.linalg.tensorsolve(d, noise_cov)
+
+
+def expected_snr(con_mat, noise_cov):
+    """
+    Estimate the expected steady-state SNR given connectivity matrix and noise covariance
+
+    :param con_mat: Connectivity matrix (A)
+    :param noise_cov: Covariance matrix of the additive noise
+    :return: Vector of SNR for each variable
+    """
+
+    return np.diag(activation_cov(con_mat, noise_cov)) / np.diag(noise_cov) - 1
