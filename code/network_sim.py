@@ -105,8 +105,8 @@ def sim_network(con_mat: Union[list, np.ndarray],
                 n_time: int = 10000,
                 iv_prob: Union[float, list, np.ndarray] = 0.025,
                 iv_gain: Union[float, list, np.ndarray] = 0.1,
-                noise_cov: Union[float, list, np.ndarray] = 1.,
-                snr: float = None):
+                snr: float = None,
+                noise_cov: Union[float, list, np.ndarray] = 1.):
     """
     Simulate a general log-linear recurrent network of M neurons or regions.
     The log of activations at each timestep is equal to the
@@ -129,12 +129,12 @@ def sim_network(con_mat: Union[list, np.ndarray],
                       (can be scalar or an array of length M)
     :param iv_gain:   Factor to scale activation when IV event occurs
                       (can be scalar or an array of length M)
+    :param snr:       Maximum ratio of variance kept from the previous timestep to noise added over all variables.
+                      If None, do not scale con_mat.
     :param noise_cov: Covariance of additive noise - either a scalar, vector, or matrix.
                       Scalar = independent noise with same variance
                       Vector = independent noise with different variances
                       Matrix = noise with dependencies between variables
-    :param snr:       Maximum ratio of variance kept from the previous timestep to noise added over all variables.
-                      If None, do not scale con_mat.
 
     :return: tuple of:
         MxN double ndarray of ln(activations) over time
