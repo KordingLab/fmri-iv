@@ -16,7 +16,7 @@ def activation_cov(con_mat, noise_cov):
     assert nvars == ncols, 'Connectivity matrix must be square'
 
     # set up the tensor equation noise_cov = D @ activation_cov
-    # this is based on the relation: A @ activation_cov @ A^T + noise_cov = activation_cov
+    # this is based on the relation: A @ activation_cov @ A.T + noise_cov = activation_cov
     d = np.eye(nvars * nvars)
     d = np.reshape(d, (nvars,) * 4)
 
@@ -26,7 +26,7 @@ def activation_cov(con_mat, noise_cov):
     return np.linalg.tensorsolve(d, noise_cov)
 
 
-def expected_snr(con_mat, noise_cov):
+def steady_snr(con_mat, noise_cov):
     """
     Estimate the expected steady-state SNR given connectivity matrix and noise covariance
 
@@ -38,17 +38,67 @@ def expected_snr(con_mat, noise_cov):
     return np.diag(activation_cov(con_mat, noise_cov)) / np.diag(noise_cov) - 1
 
 
-def signal_over_x(con_mat, noise_conv):
+def steady_sxr(con_mat, noise_cov):
     """
     Like signal-to-noise ratio, except compare the signal to signal plus noise rather
     than just the noise. Thus it is between 0 and 1. Has a more straightforward relationship
     to the scale/spectral radius of con_mat.
 
     :param con_mat: Connectivity matrix (A)
-    :param noise_conv: Covariance matrix of the additive noise
+    :param noise_cov: Covariance matrix of the additive noise
     :return: Vector of signal over x for each variable
     """
-    return 1 - np.diag(noise_conv) / np.diag(activation_cov(con_mat, noise_conv))
+    return 1 - np.diag(noise_cov) / np.diag(activation_cov(con_mat, noise_cov))
+
+
+def rescale_to_snr(con_mat, noise_cov, snr, max_iters=10, stop_error=0.001, print_info=False):
+    """
+    Try to rescale the given connectivity matrix so that the maximum SNR of all variables
+    matches the input snr. Uses an iterative process; the number of iterations and stopping
+    criterion can be controlled.
+
+    :param con_mat: Connectivity matrix (A)
+    :param noise_cov: Covariance matrix of the additive noise
+    :param snr: Target signal-to-noise ratio
+    :param max_iters: Maximum iterations of the matrix-rescaling process
+    :param stop_error: Process stops when the signal-to-x ratio (snr/(snr+1)) is within this amount of the target.
+    :param print_info: Print out debug info about iterations and error
+
+    :return: Rescaled connectivity matrix
+    """
+
+    # corresponding signal-to-x ratio:
+    sxr_target = snr / (snr + 1)
+
+    radius = max(abs(np.linalg.eig(con_mat)[0]))
+
+    con_mat = con_mat / radius * 0.5
+    radius = 0.5
+
+    # iteratively try to find magnitude of con_mat that gives the desired snr
+    err = 1.
+    for it in range(max_iters):
+        sxr = max(steady_sxr(con_mat, noise_cov))
+        err = abs(sxr - sxr_target)
+        if err < stop_error:
+            if print_info:
+                print('Matrix rescaling info:')
+                print('Iterations:', it)
+                print('SXR error:', err)
+            break
+
+        # sxr approximately scales as radius squared
+        new_radius = min(0.999, radius * np.sqrt(sxr_target / sxr))
+        con_mat = con_mat * new_radius / radius
+        radius = new_radius
+
+    else:
+        if print_info:
+            print('Matrix rescaling info:')
+            print('Iterations:', max_iters, '(max)')
+            print('SXR error:', err)
+
+    return con_mat
 
 
 def sim_network(con_mat: Union[list, np.ndarray],
@@ -56,7 +106,7 @@ def sim_network(con_mat: Union[list, np.ndarray],
                 iv_prob: Union[float, list, np.ndarray] = 0.025,
                 iv_gain: Union[float, list, np.ndarray] = 0.1,
                 noise_cov: Union[float, list, np.ndarray] = 1.,
-                var_kept: float = None):
+                snr: float = None):
     """
     Simulate a general log-linear recurrent network of M neurons or regions.
     The log of activations at each timestep is equal to the
@@ -70,7 +120,7 @@ def sim_network(con_mat: Union[list, np.ndarray],
     (i.e. ln(iv_gain) is added to the log-activation). This can then be used
     to perform an IV analysis and recover the connectivity matrix.
 
-    :param con_mat:   MxM array-like of connection strengths. If snr is not None, it will be
+    :param con_mat:   MxM array-like of connection strengths. If var_kept is not None, it will be
                       scaled to produce the requested SNR (ratio of non-noise to noise power
                       at each timestep). Otherwise, the largest eigenvalue should be
                       less than 1 in magnitude to avoid instability and unit roots.
@@ -83,12 +133,12 @@ def sim_network(con_mat: Union[list, np.ndarray],
                       Scalar = independent noise with same variance
                       Vector = independent noise with different variances
                       Matrix = noise with dependencies between variables
-    :param var_kept:  Approximate fraction of variance kept from one timestep to the next
-                      (relative to the signal with noise added). If None, do not scale con_mat.
+    :param snr:       Maximum ratio of variance kept from the previous timestep to noise added over all variables.
+                      If None, do not scale con_mat.
 
     :return: tuple of:
-        NxM double ndarray of ln(activations) over time
-        NxM boolean ndarray of IV events
+        MxN double ndarray of ln(activations) over time
+        MxN boolean ndarray of IV events
         MxM connectivity matrix, rescaled if var_kept was not None.
     """
 
@@ -124,36 +174,30 @@ def sim_network(con_mat: Union[list, np.ndarray],
             noise_cov = np.diag(noise_cov)
     assert noise_cov.shape == (n_vars, n_vars), "Invalid shape for noise covariance"
 
-    if var_kept is not None:
-        assert np.isscalar(var_kept) and np.isreal(var_kept), 'var_kept must be a real scalar'
-        assert 0 < var_kept < 1, 'var_kept must be between 0 and 1'
+    radius = max(abs(np.linalg.eig(con_mat)[0]))
 
-    spec_radius = max(abs(np.linalg.eig(con_mat)[0]))
-
-    if var_kept is None:
-        assert spec_radius < 1.0,\
+    if snr is None:
+        assert radius < 1.0,\
             'System is nonstationary - make sure all eigenvalues are < 1 in absolute value'
     else:
-        # First scale to spectral radius of 0.5 to test
-        con_mat = con_mat / spec_radius * 0.5
+        assert np.isscalar(snr) and np.isreal(snr), 'SNR must be a real scalar'
+        assert snr >= 0, 'SNR cannot be negative'
 
-        # var_kept varies as spectral radius squared
-        var_kept_start = np.mean(signal_over_x(con_mat, noise_cov))
-        con_mat = con_mat * min(np.sqrt(var_kept / var_kept_start), 0.999 * 2)
+        con_mat = rescale_to_snr(con_mat, noise_cov, snr)
 
     # Generate IVs with given probability at each timepoint
-    ivs = np.random.rand(n_time, n_vars) < iv_prob
+    ivs = np.random.rand(n_vars, n_time) < iv_prob
 
     # Initialize log of network activations as Gaussian
-    log_act = np.zeros((n_time, n_vars))
-    log_act[0, :] = np.random.randn(n_vars) + ivs[0, :] * np.log(iv_gain)
+    log_act = np.zeros((n_vars, n_time))
+    log_act[:, 0] = np.random.randn(n_vars) + ivs[:, 0] * np.log(iv_gain)
 
     # generate additive noise
-    noise = np.random.multivariate_normal(np.zeros(n_vars), noise_cov, size=n_time)
+    noise = np.random.multivariate_normal(np.zeros(n_vars), noise_cov, size=n_time).T
 
     # run the network
     for kT in range(1, n_time):
-        log_act[kT, :] = con_mat @ log_act[kT - 1, :] + noise[kT, :] + ivs[kT, :] * np.log(iv_gain)
+        log_act[:, kT] = con_mat @ log_act[:, kT - 1] + noise[:, kT] + ivs[:, kT] * np.log(iv_gain)
 
     return log_act, ivs, con_mat
 

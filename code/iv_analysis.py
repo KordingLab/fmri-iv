@@ -4,8 +4,8 @@ import numpy as np
 def iv_betas(activations, instruments):
     """
     Estimate causal connection strengths using instrumental variable method.
-    :param activations: M x N time series of activations for N neurons/regions
-    :param instruments: M x N time series N instruments each of which corresponds to 1 region
+    :param activations: NxM time series of activations for N neurons/regions
+    :param instruments: NxM time series N instruments each of which corresponds to 1 region
     only directly affects its corresponding neuron (i.e. satisfies the IV criteria for
     that node of the causal graph).
 
@@ -21,29 +21,24 @@ def iv_betas(activations, instruments):
 
     assert instruments.shape == activations.shape, "Activations and instruments must be the same shape"
 
-    n_times, n_regions = activations.shape
+    n_regions, n_times = activations.shape
 
     assert n_times >= 2, "Must have at least 2 timepoints for IV analysis"
 
     # define z (instrument), x (timepoint 1), and y (timepoint 2)
-    z = instruments[:-1, :]
-    x = activations[:-1, :]
-    y = activations[1:, :]
-
-    # demean for regression and split along columns
-    zs = np.hsplit(z - np.mean(z, axis=0), n_regions)
-    xs = np.hsplit(x - np.mean(x, axis=0), n_regions)
-    ys = np.hsplit(y - np.mean(y, axis=0), n_regions)
+    z = instruments[:, :-1]
+    x = activations[:, :-1]
+    y = activations[:, 1:]
 
     # do 2SLS for each region
     beta = np.zeros((n_regions, n_regions))
 
     for kR1 in range(n_regions):
-        w = np.linalg.lstsq(zs[kR1], xs[kR1], rcond=None)[0]
-        x_pred = zs[kR1] * w
+        w, b = np.linalg.lstsq(np.vstack([z[kR1], np.ones(n_times - 1)]).T, x[kR1], rcond=None)[0]
+        x_pred = z[kR1] * w + b
 
         for kR2 in range(n_regions):
-            beta[kR2, kR1] = np.linalg.lstsq(x_pred, ys[kR2], rcond=None)[0]
+            beta[kR2, kR1], _ = np.linalg.lstsq(np.vstack([x_pred, np.ones(n_times - 1)]).T, y[kR2], rcond=None)[0]
 
     return beta
 
@@ -61,7 +56,7 @@ def delayed_iv_betas(activations, instruments):
     :return: A matrix of "beta" coefficients - beta[i, j] = estimated effect of region j on region i.
     """
 
-    return iv_betas(activations[1:, :], instruments[:-1, :])
+    return iv_betas(activations[:, 1:], instruments[:, :-1])
 
 
 def pseudo_iv_betas(activations, sd_threshold=2, log_transform_input=False):
@@ -72,7 +67,7 @@ def pseudo_iv_betas(activations, sd_threshold=2, log_transform_input=False):
     does probably affect other neurons in the network. Similarly, it is going to be influenced
     by other neurons in the network.
 
-    :param activations: M x N time series of activations for N neurons/regions
+    :param activations: NxM time series of activations for N neurons/regions
     :param sd_threshold: instrument is "on" when past activity of each neuron is below
     its mean activation minus this number times the standard deviation of its activation.
     :param log_transform_input: if true, take the natural log of the activations before calculating the pseudo-IV.
@@ -86,14 +81,14 @@ def pseudo_iv_betas(activations, sd_threshold=2, log_transform_input=False):
     assert n_times >= 3, "Must have at least 3 timepoints for pseudo-IV analysis"
 
     # define instrument, x, and y
-    act_t0 = activations[:-1, :]
+    act_t0 = activations[:, :-1]
     if log_transform_input:
         act_t0 = np.log(act_t0)
 
-    z = np.array(act_t0 < np.mean(activations, axis=0) - sd_threshold * np.std(activations, axis=0),
-                 dtype=np.float64)
+    threshold = np.mean(activations, axis=1, keepdims=True) - sd_threshold * np.std(activations, axis=1, keepdims=True)
+    z = np.array(act_t0 < threshold, dtype=np.float64)
 
-    return iv_betas(activations[1:, :], z)
+    return iv_betas(activations[:, 1:], z)
 
 
 def davids_method(activations):
@@ -103,9 +98,9 @@ def davids_method(activations):
     :return: estimation of A
     """
 
-    n_times, _ = activations.shape
+    _, n_times = activations.shape
 
-    cov_mat = activations.T @ activations / n_times
-    autocorr_mat = activations[1:].T @ activations[:-1] / (n_times - 1)
+    cov_mat = np.cov(activations)
+    autocorr_mat = activations[:, 1:] @ activations[:, :-1].T / (n_times - 1)
 
     return autocorr_mat @ np.linalg.pinv(cov_mat)
