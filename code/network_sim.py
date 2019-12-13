@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Union
+import smallworld
 
 
 def activation_cov(con_mat, noise_cov):
@@ -51,9 +52,9 @@ def steady_sxr(con_mat, noise_cov):
     return 1 - np.diag(noise_cov) / np.diag(activation_cov(con_mat, noise_cov))
 
 
-def rescale_to_snr(con_mat, noise_cov, snr, max_iters=10, stop_error=0.001, print_info=False):
+def radius_for_snr(con_mat, noise_cov, snr, max_iters=10, stop_error=0.001, print_info=False):
     """
-    Try to rescale the given connectivity matrix so that the maximum SNR of all variables
+    Find the best spectral radius for the given connectivity matrix so that the maximum SNR of all variables
     matches the input snr. Uses an iterative process; the number of iterations and stopping
     criterion can be controlled.
 
@@ -64,7 +65,7 @@ def rescale_to_snr(con_mat, noise_cov, snr, max_iters=10, stop_error=0.001, prin
     :param stop_error: Process stops when the signal-to-x ratio (snr/(snr+1)) is within this amount of the target.
     :param print_info: Print out debug info about iterations and error
 
-    :return: Rescaled connectivity matrix
+    :return: The radius to use to rescale con_mat
     """
 
     # corresponding signal-to-x ratio:
@@ -98,7 +99,7 @@ def rescale_to_snr(con_mat, noise_cov, snr, max_iters=10, stop_error=0.001, prin
             print('Iterations:', max_iters, '(max)')
             print('SXR error:', err)
 
-    return con_mat
+    return radius
 
 
 def sim_network(con_mat: Union[list, np.ndarray],
@@ -106,7 +107,8 @@ def sim_network(con_mat: Union[list, np.ndarray],
                 iv_prob: Union[float, list, np.ndarray] = 0.025,
                 iv_gain: Union[float, list, np.ndarray] = 0.1,
                 snr: float = None,
-                noise_cov: Union[float, list, np.ndarray] = 1.):
+                noise_cov: Union[float, list, np.ndarray] = 1.,
+                steps_per_time: int = 1):
     """
     Simulate a general log-linear recurrent network of M neurons or regions.
     The log of activations at each timestep is equal to the
@@ -120,21 +122,23 @@ def sim_network(con_mat: Union[list, np.ndarray],
     (i.e. ln(iv_gain) is added to the log-activation). This can then be used
     to perform an IV analysis and recover the connectivity matrix.
 
-    :param con_mat:   MxM array-like of connection strengths. If var_kept is not None, it will be
-                      scaled to produce the requested SNR (ratio of non-noise to noise power
-                      at each timestep). Otherwise, the largest eigenvalue should be
-                      less than 1 in magnitude to avoid instability and unit roots.
-    :param n_time:    Number of timepoints (N)
-    :param iv_prob:   Probability of IV event at each time for each variable
-                      (can be scalar or an array of length M)
-    :param iv_gain:   Factor to scale activation when IV event occurs
-                      (can be scalar or an array of length M)
-    :param snr:       Maximum ratio of variance kept from the previous timestep to noise added over all variables.
-                      If None, do not scale con_mat.
-    :param noise_cov: Covariance of additive noise - either a scalar, vector, or matrix.
-                      Scalar = independent noise with same variance
-                      Vector = independent noise with different variances
-                      Matrix = noise with dependencies between variables
+    :param con_mat:         MxM array-like of connection strengths. If var_kept is not None, it will be
+                            scaled to produce the requested SNR (ratio of non-noise to noise power
+                            at each timestep). Otherwise, the largest eigenvalue should be
+                            less than 1 in magnitude to avoid instability and unit roots.
+    :param n_time:          Number of timepoints (N)
+    :param iv_prob:         Probability of IV event at each time for each variable
+                            (can be scalar or an array of length M)
+    :param iv_gain:         Factor to scale activation when IV event occurs
+                            (can be scalar or an array of length M)
+    :param snr:             Maximum ratio of variance kept from the previous timestep to noise added over all variables.
+                            If None, do not scale con_mat.
+    :param noise_cov:       Covariance of additive noise - either a scalar, vector, or matrix.
+                            Scalar = independent noise with same variance
+                            Vector = independent noise with different variances
+                            Matrix = noise with dependencies between variables
+    :param steps_per_time:  Number of state transitions to occur between each pair of consecutive observations.
+                            The total number of steps in the simulation will be this number times n_time.
 
     :return: tuple of:
         MxN double ndarray of ln(activations) over time
@@ -174,8 +178,10 @@ def sim_network(con_mat: Union[list, np.ndarray],
             noise_cov = np.diag(noise_cov)
     assert noise_cov.shape == (n_vars, n_vars), "Invalid shape for noise covariance"
 
-    radius = max(abs(np.linalg.eig(con_mat)[0]))
+    assert steps_per_time > 0, "Steps per time must be positive"
+    n_steps = steps_per_time * n_time
 
+    radius = max(abs(np.linalg.eig(con_mat)[0]))
     if snr is None:
         assert radius < 1.0,\
             'System is nonstationary - make sure all eigenvalues are < 1 in absolute value'
@@ -183,32 +189,36 @@ def sim_network(con_mat: Union[list, np.ndarray],
         assert np.isscalar(snr) and np.isreal(snr), 'SNR must be a real scalar'
         assert snr >= 0, 'SNR cannot be negative'
 
-        con_mat = rescale_to_snr(con_mat, noise_cov, snr)
+        # Get radius for one timestep, then take root to scale con_mat for one transition
+        timestep_radius = radius_for_snr(np.linalg.matrix_power(con_mat, steps_per_time), noise_cov, snr)
+        con_mat = con_mat / radius * (timestep_radius ** (1 / steps_per_time))
 
     # Generate IVs with given probability at each timepoint
-    ivs = np.random.rand(n_vars, n_time) < iv_prob
+    ivs = np.random.rand(n_vars, n_steps) < iv_prob
 
     # Initialize log of network activations as Gaussian
-    log_act = np.zeros((n_vars, n_time))
+    log_act = np.zeros((n_vars, n_steps))
     log_act[:, 0] = np.random.randn(n_vars) + ivs[:, 0] * np.log(iv_gain)
 
     # generate additive noise
-    noise = np.random.multivariate_normal(np.zeros(n_vars), noise_cov, size=n_time).T
+    noise = np.random.multivariate_normal(np.zeros(n_vars), noise_cov, size=n_steps).T
 
     # run the network
-    for kT in range(1, n_time):
+    for kT in range(1, n_steps):
         log_act[:, kT] = con_mat @ log_act[:, kT - 1] + noise[:, kT] + ivs[:, kT] * np.log(iv_gain)
 
-    return log_act, ivs, con_mat
+    return log_act[:, ::steps_per_time], ivs[:, ::steps_per_time], con_mat
 
 
-def gen_con_mat(n_vars: int, max_eig: float = 0.9):
+def gen_con_mat(n_vars: int, max_eig: float = 0.9, net_type: str = 'uniform'):
     """
     Generate a random stable connectivity matrix. Coefficients are chosen uniformly at
     random with a mean of 0 and then scaled to have the requested maximum eigenvalue.
 
-    :param n_vars:  Number of variables N
-    :param max_eig: Absolute value of max eigenvalue
+    :param n_vars:   Number of variables N
+    :param max_eig:  Absolute value of max eigenvalue
+    :param net_type: {'uniform', 'smallworld'}: Type/distribution of networks to draw from
+
     :return: N x N connectivity matrix
     """
 
@@ -216,6 +226,18 @@ def gen_con_mat(n_vars: int, max_eig: float = 0.9):
     assert 0 < max_eig <= 1, 'Max eigenvalue should be between 0 and 1'
 
     mat = np.random.rand(n_vars, n_vars) - 0.5
+
+    type_transform = {
+        'uniform': lambda m: m,
+        'smallworld': lambda m:
+            mat * smallworld.watts_strogatz(n_vars, 0.5, 0.5, True, np.random.randint(0, 2 ** 32, dtype=np.uint32))
+    }
+
+    try:
+        mat = type_transform[net_type.lower()](mat)
+    except KeyError:
+        raise ValueError('Invalid connectivity matrix type')
+
     curr_max_eig = max(abs(np.linalg.eig(mat)[0]))
 
     return mat * max_eig / curr_max_eig
