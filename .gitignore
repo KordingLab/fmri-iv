@@ -1,6 +1,6 @@
 */*
 !code/*
+!data_sim/*
 
 **/__pycache__/*
-**/*.npz
 **/.ipynb_checkpoints

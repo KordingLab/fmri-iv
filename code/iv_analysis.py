@@ -91,7 +91,7 @@ def pseudo_iv_betas(activations, sd_threshold=2, log_transform_input=False):
     return iv_betas(activations[:, 1:], z)
 
 
-def davids_method(activations):
+def norm_lagged_corr(activations):
     """
     Estimate connectivity matrix A from autocorrelation and covariance matrices
     :param activations: M x N time series of activations for N neurons/regions
