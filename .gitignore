@@ -1,6 +1,7 @@
 */*
 !code/*
 !data_sim/*
+data_sim/activations_sparse.npz
 
 **/__pycache__/*
 **/.ipynb_checkpoints
