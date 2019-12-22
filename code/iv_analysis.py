@@ -104,3 +104,28 @@ def norm_lagged_corr(activations):
     autocorr_mat = activations[:, 1:] @ activations[:, :-1].T / (n_times - 1)
 
     return autocorr_mat @ np.linalg.pinv(cov_mat)
+
+
+# Also export dictionary of methods for convenience and consistency
+methods = {
+    'real': {
+        'name': 'Real IV',
+        'fn': iv_betas
+    },
+    'pseudo': {
+        'name': 'Pseudo-IV',
+        'fn': lambda log_act, ivs: pseudo_iv_betas(log_act)
+    },
+    'delayed': {
+        'name': 'Delayed IV',
+        'fn': delayed_iv_betas
+    },
+    'corr': {
+        'name': 'Correlations',
+        'fn': lambda log_act, ivs: np.corrcoef(log_act)
+    },
+    'lagged_corr': {
+        'name': 'Normalized lag-1 correlations',
+        'fn': lambda log_act, ivs: norm_lagged_corr(log_act)
+    }
+}
