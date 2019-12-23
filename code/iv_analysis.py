@@ -94,7 +94,7 @@ def pseudo_iv_betas(activations, sd_threshold=2, log_transform_input=False):
 def norm_lagged_corr(activations):
     """
     Estimate connectivity matrix A from autocorrelation and covariance matrices
-    :param activations: M x N time series of activations for N neurons/regions
+    :param activations: NxM time series of activations for N neurons/regions
     :return: estimation of A
     """
 
@@ -129,3 +129,41 @@ methods = {
         'fn': lambda log_act, ivs: norm_lagged_corr(log_act)
     }
 }
+
+
+def all_methods_estimate(activations, instruments, observable=None, rois=None):
+    """
+    Estimate connectivity using all candidate methods (in dictionary above).
+    Optionally restrict which variables are observable and which are returned in the output.
+
+    :param activations: NxM timeseries of (log of) regional activations
+    :param instruments: NxM timeseries of artificial (binary) instruments
+    :param observable:  If not None, should be binary or numerical 1-D indices. Only use these variables in analysis.
+    :param rois:        If not None, should be binary or numerical 1-D indices and this must correspond to a
+                        subset of `observable` indices. Only return these variables.
+
+    :return: Dictionary of connectivity estimates (keys match the keys of `methods` above)
+    """
+    instruments = np.array(instruments, dtype=np.float64)
+
+    n_vars = activations.shape[0]
+    all_vars = np.arange(n_vars)
+
+    if observable is None:
+        observable = all_vars
+    else:
+        observable = all_vars[observable]
+
+    if rois is None:
+        rois = all_vars
+    else:
+        rois = all_vars[rois]
+
+    # ensure that rois is a subset of observable
+    assert np.isin(rois, observable).all(), 'rois must be a subset of observable variables'
+
+    # get which *of the observable* variables are of interest
+    rois_rel = np.isin(observable, rois)
+
+    return {key: method['fn'](activations[observable, :], instruments[observable, :])[np.ix_(rois_rel, rois_rel)]
+            for key, method in methods.items()}
