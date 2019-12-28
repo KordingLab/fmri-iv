@@ -240,4 +240,8 @@ def gen_con_mat(n_vars: int, max_eig: float = 0.9, net_type: str = 'uniform'):
 
     curr_max_eig = max(abs(np.linalg.eig(mat)[0]))
 
-    return mat * max_eig / curr_max_eig
+    if curr_max_eig == 0:
+        # Oops. Recursively try again.
+        return gen_con_mat(n_vars, max_eig, net_type)
+    else:
+        return mat * max_eig / curr_max_eig
